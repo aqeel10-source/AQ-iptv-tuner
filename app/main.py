@@ -358,6 +358,7 @@ class ChannelMux:
         self.hdhr_buffers: Dict[int, asyncio.Queue] = {}  # Light 7A: id(q) → jitter buf
         self.hdhr_tasks:   Dict[int, asyncio.Task]  = {}  # Light 7A: id(q) → drain task
         self._jitter_failed_subs: set = set()  # Jitter failover: providers to skip this session
+        self._stall_alert_times: list = []    # Throttle: timestamps of stall-restart alerts
     @property
     def viewer_count(self): return len(self.queues)
     @property
@@ -513,10 +514,15 @@ class ChannelMux:
                                      and ordered[i].sub_name not in self._jitter_failed_subs),
                                     None)
                                 if next_idx is not None:
+                                    next_sub = ordered[next_idx].sub_name
                                     log.warning(
                                         "STALL FAILOVER  %s  %.1fs stall  %s → %s",
-                                        self.ch.name, gap, cand.sub_name,
-                                        ordered[next_idx].sub_name)
+                                        self.ch.name, gap, cand.sub_name, next_sub)
+                                    asyncio.create_task(tg_send(tg_alert(
+                                        "🔀", "Stall Failover",
+                                        f"Channel: <b>{self.ch.name}</b>\n"
+                                        f"{cand.sub_name} → <b>{next_sub}</b>\n"
+                                        f"Stall: {gap:.0f}s")))
                                     self._cand_idx = next_idx
                                     _jitter_break = True
                                     break
@@ -2357,7 +2363,16 @@ async def health_monitor():
                     state.add_alert("warning", f"Stream stalled, restarting: {mux.ch.name}")
                     idle = int(time.time()-mux.last_chunk_at)
                     state.log_event("health", "STALL RESTART", f"{mux.ch.name} — no data for {idle}s")
-                    asyncio.create_task(tg_send(tg_alert("⚠️", "Stream Stalled — Auto-Restarting", f"Channel: <b>{mux.ch.name}</b>\nNo data for {idle}s — restarting now")))
+                    # Alert only if this channel stalls 3+ times within an hour
+                    now_ts = time.time()
+                    mux._stall_alert_times = [t for t in mux._stall_alert_times if now_ts - t < 3600]
+                    mux._stall_alert_times.append(now_ts)
+                    if len(mux._stall_alert_times) >= 3:
+                        asyncio.create_task(tg_send(tg_alert(
+                            "⚠️", "Stream Stalling Repeatedly",
+                            f"Channel: <b>{mux.ch.name}</b>\n"
+                            f"{len(mux._stall_alert_times)}× stalls in last hour\n"
+                            f"Last idle: {idle}s")))
                     ch = mux.ch; sub = mux.sub
                     await mux.kill_all(); await asyncio.sleep(2)
                     nm = ChannelMux(key, ch, sub); state.mux[key] = nm; await nm.start()
@@ -2555,7 +2570,8 @@ async def lifespan(app: FastAPI):
                 uptime = int(time.time() - state.started_at)
                 h = uptime // 3600; m = (uptime % 3600) // 60
                 sep = "─" * 24
-                sys_info = state.health or {}
+                sys_info = (state.health or {}).get("system", {})
+                hostname = load_config().get("hostname", "iptv-tuner")
                 msg = (
                     f"📊 <b>Daily Summary</b>\n"
                     f"{sep}\n"
@@ -2569,7 +2585,7 @@ async def lifespan(app: FastAPI):
                     f"{sep}\n"
                     f"💻  CPU  {sys_info.get('cpu_pct', '?')}%  ·  🧠  RAM  {sys_info.get('mem_mb', '?')} MB\n"
                     f"{sep}\n"
-                    f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  <i>{load_config().get('hostname', 'iptv-tuner')}</i>"
+                    f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  <i>{hostname}</i>"
                 )
                 await tg_send(msg)
                 # Phase 10: warn about Xtream users about to expire so the
@@ -3882,12 +3898,7 @@ async def _register_user_session(user: User, channel_key: str,
         user.last_seen_ts       = time.time()
         first_time_this_ip      = (user.last_seen_ip != client_ip)
         user.last_seen_ip       = client_ip
-    # Optional Item 5: alert on first login from a new IP
-    if first_time_this_ip and _xtream_cfg().get("user_alerts_enabled", True):
-        asyncio.create_task(tg_send(tg_alert(
-            "🔑", "New Xtream IP",
-            f"<b>{html.escape(user.username)}</b> connected from "
-            f"<code>{html.escape(client_ip)}</code> (first time)")))
+    # New-IP alert removed — too noisy for dynamic IPs (mobile clients, etc.)
     _publish_user_event("session_start", user.username,
                         sid=sess.id, channel_key=channel_key,
                         client_ip=client_ip,
@@ -4860,7 +4871,6 @@ async def dashboard(request: Request):
 def _status_dict() -> dict:
     sys = state.health.get("system", {})
     return {
-        "hostname": load_config().get("hostname", "iptv-tuner"),
         "device_id": state.device_id, "base_url": state.base_url,
         "total_tuners": state.total_tuners, "total_channels": len(state.channels),
         "total_groups": len(state.all_groups),
