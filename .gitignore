@@ -1,0 +1,21 @@
+# Secrets — never commit
+app/.env
+config/
+
+# Synology metadata
+@eaDir/
+@eaDir
+**/@eaDir/
+**/@eaDir
+
+# Runtime
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Build artifacts
+*.egg-info/
+dist/
+build/

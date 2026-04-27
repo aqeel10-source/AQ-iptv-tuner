@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0a0f1e">
+<title>AQStream Login</title>
+<script>
+// FOUC prevention — apply saved theme before CSS renders
+(function(){var t=localStorage.getItem('aq.theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t)})();
+</script>
+<!-- self-hosted fonts (same as admin UI) -->
+<style>
+@font-face { font-family:'Clash Display'; src:url('/ui/fonts/ClashDisplay-700.woff2') format('woff2'); font-weight:700; font-display:swap; }
+@font-face { font-family:'Cabinet Grotesk'; src:url('/ui/fonts/CabinetGrotesk-500.woff2') format('woff2'); font-weight:500; font-display:swap; }
+@font-face { font-family:'DM Mono'; src:url('/ui/fonts/DMMono-400.woff2') format('woff2'); font-weight:400; font-display:swap; }
+
+:root {
+  --ink:     #0a0f1e;
+  --ink2:    #0d1428;
+  --surface: rgba(255,255,255,0.04);
+  --border:  rgba(255,255,255,0.08);
+  --border2: rgba(255,255,255,0.14);
+  --cyan:    #00e5ff;
+  --cyan-dim:rgba(0,229,255,0.12);
+  --violet:  #a78bfa;
+  --rose:    #fb7185;
+  --amber:   #fbbf24;
+  --text:    rgba(255,255,255,0.88);
+  --text2:   rgba(255,255,255,0.55);
+  --text3:   rgba(255,255,255,0.28);
+  --display: 'Clash Display', system-ui, sans-serif;
+  --body:    'Cabinet Grotesk', system-ui, sans-serif;
+  --mono:    'DM Mono', monospace;
+  --blur:    blur(20px) saturate(180%);
+  --r:       16px;
+  --r-sm:    10px;
+}
+
+/* Light mode tokens */
+[data-theme="light"] {
+  --ink:     #f0f4ff;
+  --ink2:    #e8eef8;
+  --surface: rgba(255,255,255,0.72);
+  --border:  rgba(0,0,0,0.08);
+  --border2: rgba(0,0,0,0.14);
+  --cyan:    #0097b2;
+  --cyan-dim:rgba(0,151,178,0.12);
+  --text:    rgba(15,23,42,0.92);
+  --text2:   rgba(15,23,42,0.55);
+  --text3:   rgba(15,23,42,0.35);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ink:     #f0f4ff;
+    --ink2:    #e8eef8;
+    --surface: rgba(255,255,255,0.72);
+    --border:  rgba(0,0,0,0.08);
+    --border2: rgba(0,0,0,0.14);
+    --cyan:    #0097b2;
+    --cyan-dim:rgba(0,151,178,0.12);
+    --text:    rgba(15,23,42,0.92);
+    --text2:   rgba(15,23,42,0.55);
+    --text3:   rgba(15,23,42,0.35);
+  }
+}
+
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; -webkit-font-smoothing:antialiased; }
+html { font-size:16px; }
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--body);
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Radial glow mesh */
+body::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(ellipse 70% 60% at 15% 20%, rgba(0,229,255,0.08), transparent 55%),
+    radial-gradient(ellipse 60% 50% at 85% 80%, rgba(167,139,250,0.07), transparent 55%),
+    radial-gradient(ellipse 40% 60% at 50% 50%, rgba(52,211,153,0.04), transparent 50%);
+}
+
+/* Noise overlay */
+body::after {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+  opacity: 0.4;
+}
+
+/* ── Card ────────────────────────────────────────────────────────────────── */
+.card {
+  position: relative; z-index: 1;
+  width: 100%; max-width: 360px;
+  background: var(--surface);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 40px 36px 36px;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.4);
+}
+
+/* Top gradient line */
+.card::before {
+  content: ''; position: absolute;
+  top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cyan), var(--violet), transparent);
+  border-radius: var(--r) var(--r) 0 0;
+}
+
+/* ── Brand mark ──────────────────────────────────────────────────────────── */
+.brand {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 14px; margin-bottom: 36px;
+}
+
+.brand-mark {
+  width: 56px; height: 56px;
+  /* SVG carries its own dark background and border-radius */
+}
+.brand-mark svg { display: block; width: 56px; height: 56px; border-radius: 14px; }
+
+.brand-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: -0.5px;
+  line-height: 1;
+  text-align: center;
+}
+/* AQ always teal; Stream white on dark, dark on light */
+.brand-name .aq     { color: #00e5ff; font-weight: 800; }
+.brand-name .stream { color: #ffffff; font-weight: 700; }
+[data-theme="light"] .brand-name .aq     { color: #0097b2; }
+[data-theme="light"] .brand-name .stream { color: #0f172a; }
+
+/* Light mode: override hardcoded cyan rgba on interactive elements + SVG gradient */
+[data-theme="light"] input[type=text]:focus,
+[data-theme="light"] input[type=password]:focus {
+  border-color: rgba(0,151,178,0.5);
+  box-shadow: 0 0 0 3px rgba(0,151,178,0.08);
+}
+[data-theme="light"] .btn-submit {
+  border-color: rgba(0,151,178,0.4);
+  color: #0097b2;
+}
+[data-theme="light"] .btn-submit:hover {
+  background: rgba(0,151,178,0.10);
+  border-color: #0097b2;
+  box-shadow: 0 0 20px rgba(0,151,178,0.18);
+}
+/* brand-mark SVG uses currentColor → inherits --cyan automatically */
+
+.brand-sub {
+  font-size: 10px;
+  color: var(--text3);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  text-align: center;
+  margin-top: 6px;
+}
+
+/* Theme toggle */
+.theme-btn {
+  position: absolute; top: 16px; right: 16px;
+  background: var(--surface); border: 1px solid var(--border2);
+  color: var(--text2); width: 32px; height: 32px; border-radius: 8px;
+  cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  backdrop-filter: var(--blur);
+}
+
+/* ── Expired banner ──────────────────────────────────────────────────────── */
+.expired-banner {
+  background: rgba(251,191,36,0.10);
+  border: 1px solid rgba(251,191,36,0.32);
+  color: var(--amber);
+  font-size: 11px;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  margin-bottom: 18px;
+  text-align: center;
+  letter-spacing: 0.3px;
+  display: none;
+}
+
+/* ── Error message ───────────────────────────────────────────────────────── */
+.error-banner {
+  background: rgba(251,113,133,0.10);
+  border: 1px solid rgba(251,113,133,0.32);
+  color: var(--rose);
+  font-size: 11px;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  margin-bottom: 18px;
+  text-align: center;
+  letter-spacing: 0.3px;
+}
+
+/* ── Form fields ─────────────────────────────────────────────────────────── */
+.field { margin-bottom: 16px; }
+
+label {
+  display: block;
+  font-size: 9px;
+  color: var(--text3);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-weight: 500;
+  margin-bottom: 7px;
+  font-family: var(--body);
+}
+
+input[type=text], input[type=password] {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 12px 14px;
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color .2s, box-shadow .2s;
+  -webkit-font-smoothing: antialiased;
+}
+input[type=text]:focus, input[type=password]:focus {
+  border-color: rgba(0,229,255,0.5);
+  box-shadow: 0 0 0 3px rgba(0,229,255,0.08);
+}
+input::placeholder { color: var(--text3); }
+
+/* ── Submit button ───────────────────────────────────────────────────────── */
+.btn-submit {
+  width: 100%;
+  background: transparent;
+  border: 1px solid rgba(0,229,255,0.4);
+  color: var(--cyan);
+  font-family: var(--body);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 13px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-top: 8px;
+  transition: background .2s, box-shadow .2s, border-color .2s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-submit:hover {
+  background: var(--cyan-dim);
+  border-color: var(--cyan);
+  box-shadow: 0 0 20px rgba(0,229,255,0.18);
+}
+.btn-submit:active { transform: scale(0.98); }
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+.card-footer {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text3);
+  letter-spacing: 0.3px;
+}
+</style>
+</head>
+<body>
+
+<button class="theme-btn" id="btn-theme" aria-label="Toggle theme" title="Toggle theme">☾</button>
+
+<div class="card">
+  <!-- Brand -->
+  <div class="brand">
+    <div class="brand-mark">
+      <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="bm-bg" x1="0" y1="0" x2="0.6" y2="1">
+            <stop offset="0%" stop-color="#0d2035"/>
+            <stop offset="100%" stop-color="#081525"/>
+          </linearGradient>
+        </defs>
+        <rect width="512" height="512" rx="108" fill="url(#bm-bg)"/>
+        <rect width="512" height="512" rx="108" fill="none" stroke="rgba(0,229,255,0.14)" stroke-width="2"/>
+        <path d="M 96 305 A 160 160 0 0 1 416 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.35"/>
+        <path d="M 146 305 A 110 110 0 0 1 366 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.65"/>
+        <path d="M 196 305 A 60 60 0 0 1 316 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.95"/>
+        <circle cx="256" cy="305" r="22" fill="#00e5ff"/>
+        <text x="256" y="430" font-family="'Arial Black','Helvetica Neue',Arial,sans-serif" font-weight="900" font-size="100" fill="#00e5ff" text-anchor="middle" letter-spacing="-3">AQ</text>
+      </svg>
+    </div>
+    <div>
+      <div class="brand-name"><span class="aq">AQ</span><span class="stream">Stream</span></div>
+      <div class="brand-sub">Secure Admin Access</div>
+    </div>
+  </div>
+
+  <!-- Session expired -->
+  <div id="expired-banner" class="expired-banner">Session expired &middot; please sign in again</div>
+
+  <!-- Login form -->
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autofocus required placeholder="admin">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••">
+    </div>
+    <!--ERROR-->
+    <button class="btn-submit" type="submit">Sign In →</button>
+  </form>
+
+  <div class="card-footer">AQ · IPTV Admin</div>
+</div>
+
+<script>
+if (location.search.indexOf('expired=1') !== -1) {
+  document.getElementById('expired-banner').style.display = 'block';
+}
+
+// Theme — sync with main app's localStorage key ('aq.theme')
+(function() {
+  var saved = localStorage.getItem('aq.theme');
+  var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var theme = saved || (prefersDark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', theme);
+  var btn = document.getElementById('btn-theme');
+  if (btn) btn.textContent = theme === 'dark' ? '☾' : '☀';
+})();
+
+document.getElementById('btn-theme').addEventListener('click', function() {
+  var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  var next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('aq.theme', next);
+  this.textContent = next === 'dark' ? '☾' : '☀';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+{
+  "_comment": "Copy this file to /config/config.json on your NAS. Remove all _comment keys.",
+
+  "hostname": "iptv-tuner",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5004,
+    "stream_port": 34343,
+    "device_id": "XXXXXXXX",
+    "base_url": "http://YOUR-NAS-IP:5004"
+  },
+
+  "subscriptions": [
+    {
+      "_comment": "Xtream Codes provider example",
+      "name": "My Provider",
+      "url": "http://provider-domain.com",
+      "username": "${SUB_MY_PROVIDER_USERNAME}",
+      "password": "${SUB_MY_PROVIDER_PASSWORD}",
+      "max_streams": 3,
+      "priority": 1,
+      "enabled": true
+    }
+  ],
+
+  "auth": {
+    "_comment": "Admin UI login. Generate password_hash with: python3 -c \"import hashlib; print(hashlib.sha256('yourpassword'.encode()).hexdigest())\"",
+    "username": "admin",
+    "password_hash": "YOUR-SHA256-HASH-HERE",
+    "session_hours": 24
+  },
+
+  "telegram": {
+    "_comment": "Optional. Create a bot via @BotFather, get chat_id via @userinfobot",
+    "enabled": false,
+    "bot_token": "YOUR-BOT-TOKEN",
+    "chat_id": "YOUR-CHAT-ID",
+    "daily_summary_hour": 8,
+    "cpu_alert_pct": 80,
+    "cpu_critical_pct": 95,
+    "mem_alert_pct": 85
+  },
+
+  "xtream": {
+    "_comment": "The Xtream Codes API base URL that Xtream clients (TiviMate, Sparkle, etc.) should connect to",
+    "server_url": "http://YOUR-NAS-IP:34343"
+  },
+
+  "plex": {
+    "_comment": "Optional. Enables Plex username resolution for viewer tracking. Get token from app.plex.tv/desktop → Account → XML API.",
+    "enabled": false,
+    "url": "http://YOUR-NAS-IP:32400",
+    "token": "YOUR-PLEX-TOKEN"
+  },
+
+  "filters": {
+    "_comment": "Only load channels from these M3U group-title values. Leave empty array to load all.",
+    "groups": []
+  },
+
+  "quality_preference": ["HEVC", "4K", "HD", "FHD", "SD"],
+
+  "epg": {
+    "_comment": "EPG XML sources. ttl_hours = how long to cache. fallback_synthetic = generate basic EPG if no source available.",
+    "sources": [],
+    "ttl_hours": 6,
+    "fallback_synthetic": true,
+    "channel_epg_map": {}
+  },
+
+  "channel_merges": {
+    "_comment": "Merge duplicate channels across providers. Key = canonical name, value = list of aliases.",
+    "Example Channel HD": ["Example Channel", "EXAMPLE CHANNEL HD"]
+  },
+
+  "channel_blacklist": [],
+
+  "channel_groups": [],
+
+  "channel_renames": {
+    "_comment": "Rename channels as they appear in the admin UI and M3U output.",
+    "Old Name": "New Name"
+  },
+
+  "quality_overrides": {},
+
+  "provider_colors": {
+    "_comment": "Optional colour coding per provider name in the admin UI.",
+    "My Provider": "#3b82f6"
+  },
+
+  "group_order": [],
+
+  "channel_assignments": {
+    "_comment": "Force a channel to always use a specific provider. Key = channel name, value = provider name.",
+    "Important Channel": "My Provider"
+  }
+}

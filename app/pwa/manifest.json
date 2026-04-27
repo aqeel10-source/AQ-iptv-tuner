@@ -1,0 +1,23 @@
+{
+  "name": "AQStream",
+  "short_name": "AQStream",
+  "description": "IPTV Tuner Admin Panel",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "background_color": "#0a0f1e",
+  "theme_color": "#0a0f1e",
+  "orientation": "natural",
+  "categories": ["utilities"],
+  "icons": [
+    {"src": "/app/icon.svg?v=20260425", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/app/icon-192.png?v=20260425", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/app/icon-512.png?v=20260425", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ],
+  "shortcuts": [
+    {"name": "Overview", "url": "/", "description": "Live dashboard"},
+    {"name": "Streams",  "url": "/", "description": "Active streams"}
+  ]
+}

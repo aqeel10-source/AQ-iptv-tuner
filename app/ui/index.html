@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AQ IPTV">
+<meta name="theme-color" content="#0a0f1e">
+<link rel="manifest" href="/app/manifest.json">
+<link rel="apple-touch-icon" href="/app/icon-192.png">
+<title>AQ · IPTV Admin</title>
+<!-- Phase 13 Item 3: read theme before first paint to avoid FOUC -->
+<script>
+(function () {
+  var t;
+  try { t = localStorage.getItem('aq.theme'); } catch (_) {}
+  if (t !== 'light' && t !== 'dark') {
+    t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<link rel="stylesheet" href="/ui/styles.css">
+<script src="/ui/app.js" defer></script>
+</head>
+<body>
+
+<!-- Phase 13 Item 7: offline banner (slides in when navigator goes offline) -->
+<div id="offline-banner">⚠ Offline — changes will not be saved until reconnected</div>
+
+<!-- Phase 13 Item 5: top progress bar (0→90% fake while /reload runs, snap to
+     100% on resolve; indeterminate sweep while dispatch tab polls) -->
+<div id="progress-bar"></div>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark-v2">
+        <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bm-bg" x1="0" y1="0" x2="0.6" y2="1">
+              <stop offset="0%" stop-color="#0d2035"/>
+              <stop offset="100%" stop-color="#081525"/>
+            </linearGradient>
+          </defs>
+          <rect width="512" height="512" rx="108" fill="url(#bm-bg)"/>
+          <rect width="512" height="512" rx="108" fill="none" stroke="rgba(0,229,255,0.14)" stroke-width="2"/>
+          <path d="M 96 305 A 160 160 0 0 1 416 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.35"/>
+          <path d="M 146 305 A 110 110 0 0 1 366 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.65"/>
+          <path d="M 196 305 A 60 60 0 0 1 316 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.95"/>
+          <circle cx="256" cy="305" r="22" fill="#00e5ff"/>
+          <text x="256" y="430" font-family="'Arial Black','Helvetica Neue',Arial,sans-serif" font-weight="900" font-size="100" fill="#00e5ff" text-anchor="middle" letter-spacing="-3">AQ</text>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-name"><span class="bn-aq">AQ</span><span class="bn-stream">Stream</span></div>
+        <div class="brand-sub" id="brand-hostname">iptv-tuner</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="live-chip"><div class="live-dot"></div><span class="live-label">LIVE</span></div>
+      <!-- Phase 13 Item 5: SSE disconnect indicator (browser auto-reconnects;
+           shown after a 5s grace period if reconnect hasn't completed) -->
+      <div id="stale-indicator" class="stale-badge" title="Live updates paused — reconnecting">Stale · reconnecting…</div>
+      <div id="clock">--:--</div>
+      <button class="topbar-gear" id="btn-pwa-install" aria-label="Install app" title="Install app" style="display:none" onclick="pwaInstall()">+</button>
+      <button class="topbar-gear" id="btn-theme" aria-label="Toggle theme" title="Toggle theme"><span id="theme-icon">☾</span></button>
+      <button class="topbar-gear" id="btn-settings" aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
+
+<!-- FOLD LAYOUT -->
+<div class="fold-wrap">
+
+  <div class="side-overlay" id="side-overlay"></div>
+
+  <!-- SIDE NAV -->
+  <nav class="side-nav" id="side-nav" style="display:none">
+    <div class="side-nav-section">Live</div>
+    <div class="side-nav-item active" data-page="overview"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>Overview</div>
+    <div class="side-nav-item" data-page="channels"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/><circle cx="7" cy="6" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/></svg></span>Channels</div>
+    <div class="side-nav-item" data-page="groups" style="position:relative"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="3" y="12" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="5" rx="1"/><path d="M3 21h7M14 21h7"/></svg></span>Groups<span class="sni-badge" id="grp-new-badge" style="display:none">!</span></div>
+    <div class="side-nav-section">Operate</div>
+    <div class="side-nav-item" data-page="monitoring" style="position:relative">
+      <span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2-6 3 12 2.5-6 1.5 0 2-3h4"/></svg></span>Monitoring
+      <span class="sni-badge" id="sh-badge" style="display:none">0</span>
+    </div>
+    <div class="side-nav-item" data-page="providers"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="6" rx="1"/><rect x="3" y="15" width="18" height="6" rx="1"/><path d="M7 6h.01"/><path d="M7 18h.01"/><path d="M3 9v6"/><path d="M21 9v6"/></svg></span>Providers</div>
+    <div class="side-nav-item" data-page="users"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="17" cy="7" r="3"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg></span>Users</div>
+    <div class="side-foot">
+      <button class="settings-link" id="btn-settings-side"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></span>Settings</button>
+      <a href="/logout" class="signout-btn"><span class="sni-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg></span>Sign Out</a>
+    </div>
+  </nav>
+
+  <div class="fold-content" id="fold-content">
+
+    <!-- OVERVIEW -->
+    <div class="page active" id="page-overview">
+      <div class="pg-hdr">
+        <div><div class="pg-title">Overview <em>·</em> AQ</div><div class="pg-sub">Real-time system status</div></div>
+        <div class="pg-actions">
+          <button class="btn btn-cyan btn-sm" id="btn-refresh-acc">⟳ Accounts</button>
+          <button class="btn btn-green btn-sm" id="btn-refresh-ch">⟳ Channels</button>
+          <button class="btn btn-rose btn-sm" id="btn-restart">↺ Restart</button>
+        </div>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card cyan"><div class="stat-l">Channels</div><div class="stat-v" id="p-ch">—</div></div>
+        <div class="stat-card green"><div class="stat-l">Streams</div><div class="stat-v" id="p-str">—</div></div>
+        <div class="stat-card amber"><div class="stat-l">Viewers</div><div class="stat-v" id="p-vi">—</div></div>
+        <div class="stat-card violet"><div class="stat-l">Uptime</div><div class="stat-v" id="p-up">—</div></div>
+        <div class="stat-card"><div class="stat-l">CPU</div><div class="stat-v" id="p-cpu">—</div></div>
+        <div class="stat-card"><div class="stat-l">Memory</div><div class="stat-v" id="p-mem">—</div></div>
+      </div>
+      <div class="sec"><div class="sec-hdr"><span class="sec-title">Subscriptions</span></div><div id="ov-subs"></div></div>
+      <div class="sec"><div class="sec-hdr"><span class="sec-title">Active Channels</span><button class="btn btn-rose btn-sm" id="btn-kill-all-ov">✕ Kill All</button></div><div id="ov-streams"></div></div>
+
+      <!-- Phase 12 D: Slot utilization gauges -->
+      <div class="sec" style="margin-bottom:14px">
+        <div class="sec-hdr"><span class="sec-title">Slot Utilization</span><span class="text-xs">live · per upstream</span></div>
+        <div id="ov-gauges" class="ov-gauge-grid"></div>
+      </div>
+
+      <!-- Phase 12 D: Top 5 channels + Top 5 users (24h) -->
+      <div class="ov-top-grid">
+        <div class="sec">
+          <div class="sec-hdr"><span class="sec-title">Top Channels (24h)</span><span class="text-xs">click → Channels tab</span></div>
+          <div id="ov-top-ch"></div>
+        </div>
+        <div class="sec">
+          <div class="sec-hdr"><span class="sec-title">Top Users (24h)</span><span class="text-xs">click → Users tab</span></div>
+          <div id="ov-top-us"></div>
+        </div>
+      </div>
+
+      <!-- Phase 12 D: Dispatcher activity sparkline -->
+      <div class="sec">
+        <div class="sec-hdr">
+          <span class="sec-title">Dispatcher Activity (24h)</span>
+          <span class="text-xs"><span style="color:var(--text3)">■</span> stream starts &nbsp; <span style="color:var(--rose)">■</span> failovers</span>
+        </div>
+        <div id="ov-spark" style="padding:14px 16px"></div>
+      </div>
+    </div>
+
+    <!-- CHANNELS (Logical Groups + Merges subpanes) -->
+    <div class="page" id="page-channels">
+      <div class="subtab-strip" data-subtab-host="channels">
+        <button class="subtab active" data-sub="channel-groups">Logical Groups</button>
+        <button class="subtab" data-sub="merges">Channels</button>
+      </div>
+
+      <!-- Logical Groups subpane -->
+      <div class="subtab-pane active" data-sub-pane="channel-groups">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Logical Groups</div><div class="pg-sub">Define and order your channel categories</div></div>
+          <div class="pg-actions">
+            <button class="btn btn-cyan btn-sm" id="btn-cg-add">+ Group</button>
+            <button class="btn btn-green btn-sm" id="btn-cg-save">✓ Save</button>
+          </div>
+        </div>
+        <!-- Add group inline form -->
+        <div id="cg-add-form" style="display:none;padding:10px 14px;background:rgba(0,229,255,0.04);border-bottom:1px solid var(--border);display:none;align-items:center;gap:8px">
+          <input id="cg-new-name" class="f-input" placeholder="Group name…" style="flex:1;padding:8px 12px;font-size:12px">
+          <button class="btn btn-green btn-sm" id="btn-cg-add-confirm">Add</button>
+          <button class="btn btn-ghost btn-sm" id="btn-cg-add-cancel">Cancel</button>
+        </div>
+        <div class="sec">
+          <div class="sec-hdr"><span class="sec-title">Groups</span><span class="text-xs" id="cg-count-lbl"></span></div>
+          <div id="cg-list" style="padding:8px 0"></div>
+        </div>
+      </div>
+
+      <!-- Merges / Channels subpane -->
+      <div class="subtab-pane" data-sub-pane="merges">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Channels</div><div class="pg-sub">Merge duplicates · assign group · upload logo</div></div>
+          <div class="pg-actions">
+            <button class="btn btn-green btn-sm" id="btn-save-quality">✓ Save</button>
+          </div>
+        </div>
+
+        <!-- Merge suggestions (collapsible) -->
+        <div class="sec" id="q-suggest-sec" style="margin-bottom:14px;display:none">
+          <div class="sec-hdr" id="q-suggest-hdr" style="cursor:pointer;user-select:none">
+            <span class="sec-title">Merge Suggestions</span>
+            <span class="text-xs" id="q-suggest-count" style="color:var(--amber)">0 suggestions</span>
+            <span style="margin-left:auto;font-size:10px;color:var(--text3)" id="q-suggest-chevron">▸ Show</span>
+          </div>
+          <div id="q-suggest-body" style="display:none"></div>
+        </div>
+
+        <!-- Channel list -->
+        <div class="sec">
+          <div class="sec-hdr">
+            <span class="sec-title">Channel List</span>
+            <span id="q-summary" style="font-size:10px;color:var(--text3)"></span>
+          </div>
+
+          <!-- Selection action bar -->
+          <div id="q-sel-bar" style="display:none;padding:10px 14px;
+               background:rgba(52,211,153,0.07);border-bottom:1px solid rgba(52,211,153,0.2);
+               align-items:center;justify-content:space-between;gap:8px">
+            <span id="q-sel-info" style="font-size:11px;color:var(--emerald)">0 selected</span>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-sm btn-green" id="q-merge-btn" style="display:none;font-size:10px;padding:5px 12px">
+                Merge (<span id="q-merge-count">0</span>)
+              </button>
+              <button class="btn btn-sm btn-rose" id="q-cancel-btn" style="font-size:10px;padding:5px 12px">Cancel</button>
+              <button class="btn btn-sm btn-amber" id="q-undo-btn" style="display:none;font-size:10px;padding:5px 12px">Undo</button>
+            </div>
+          </div>
+
+          <!-- Filter toolbar -->
+          <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="q-search" placeholder="Search channels…" class="f-input" style="flex:1;min-width:180px;padding:8px 12px;font-size:12px">
+            <select id="q-group" class="f-input" style="padding:8px 10px;font-size:12px;max-width:180px">
+              <option value="">All Groups</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text2);flex-shrink:0">
+              <input type="checkbox" id="q-merged-only" style="accent-color:var(--emerald);width:15px;height:15px">
+              Merged only
+            </label>
+          </div>
+
+          <div id="q-variants" style="max-height:60dvh;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GROUPS PAGE -->
+    <div class="page" id="page-groups">
+      <div class="pg-hdr">
+        <div><div class="pg-title">Groups <em>·</em> Filter</div><div class="pg-sub" id="grpf-sub-lbl">Loading…</div></div>
+        <div class="pg-actions">
+          <button class="btn btn-cyan btn-sm" id="btn-grpf-all">All</button>
+          <button class="btn btn-rose btn-sm" id="btn-grpf-none">None</button>
+          <button class="btn btn-green btn-sm" id="btn-grpf-save">✓ Apply</button>
+        </div>
+      </div>
+      <!-- Filter toolbar -->
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="grpf-search" placeholder="Search groups…" class="f-input" style="flex:1;min-width:150px;padding:8px 12px;font-size:12px">
+        <select id="grpf-provider" class="f-input" style="padding:8px 10px;font-size:12px;max-width:200px">
+          <option value="">All Providers</option>
+        </select>
+      </div>
+      <div class="sec">
+        <div id="grpf-list" style="max-height:70dvh;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- EPG PAGE removed from nav — content now in Settings > EPG -->
+    <div class="page" id="page-epg" style="display:none!important"></div>
+
+    <!-- MONITORING (Phase 13 A.5: Health + Logs + Analytics under sub-tabs) -->
+    <div class="page" id="page-monitoring">
+      <div class="subtab-strip" data-subtab-host="monitoring">
+        <button class="subtab active" data-sub="health">Health <span class="subtab-badge" id="sub-h-badge" style="display:none">0</span></button>
+        <button class="subtab" data-sub="logs">Logs</button>
+        <button class="subtab" data-sub="analytics">Analytics</button>
+      </div>
+
+      <!-- Health pane -->
+      <div class="subtab-pane active" data-sub-pane="health">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Health <em>Monitor</em></div><div class="pg-sub">Auto-checks every 30s</div></div>
+          <button class="btn btn-rose btn-sm" id="btn-clear-alerts">Clear Alerts</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px" class="h-split">
+          <div class="sec"><div class="sec-hdr"><span class="sec-title">System</span></div><div id="h-sys"></div></div>
+          <div class="sec"><div class="sec-hdr"><span class="sec-title">Streams</span></div><div id="h-streams"></div></div>
+        </div>
+        <div class="sec" style="margin-bottom:14px"><div class="sec-hdr"><span class="sec-title">Servers</span></div><div id="h-servers"></div></div>
+        <div class="sec" style="margin-bottom:14px">
+          <div class="ip-card-header">
+            <div class="ip-card-title">Blocked IPs <span class="ip-count-badge" id="blocked-count" style="display:none">0</span></div>
+            <span class="ip-refresh-label">↻ 30s</span>
+          </div>
+          <div id="blocked-ips-body">
+            <div class="ip-empty">
+              <svg class="ip-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+              <span class="ip-empty-text">No blocked IPs</span>
+            </div>
+          </div>
+        </div>
+        <div class="sec"><div class="sec-hdr"><span class="sec-title">Alert Log</span></div><div id="h-alerts"></div></div>
+      </div>
+
+      <!-- Logs pane -->
+      <div class="subtab-pane" data-sub-pane="logs">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Event <em>Logs</em></div><div class="pg-sub" id="log-count-lbl">0 entries</div></div>
+          <div class="pg-actions">
+            <select id="log-filter" class="f-input" style="padding:8px 12px;font-size:11px;width:auto">
+              <option value="">All Events</option>
+              <option value="stream">Stream</option>
+              <option value="viewer">Viewer</option>
+              <option value="channel">Channel</option>
+              <option value="health">Health</option>
+              <option value="auth">Auth</option>
+              <option value="system">System</option>
+            </select>
+            <button class="btn btn-rose btn-sm" id="btn-clear-logs">Clear</button>
+          </div>
+        </div>
+        <div class="sec"><div id="logs-list" style="max-height:65dvh;overflow-y:auto"></div></div>
+      </div>
+
+      <!-- Analytics pane -->
+      <div class="subtab-pane" data-sub-pane="analytics">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Analytics</div><div class="pg-sub">Watch history &amp; Plex users</div></div>
+          <div class="pg-actions">
+            <select id="an-days" class="f-input" style="padding:8px 12px;font-size:11px;width:auto">
+              <option value="1">24h</option><option value="7" selected>7 days</option>
+              <option value="30">30 days</option><option value="90">90 days</option>
+            </select>
+            <button class="btn btn-rose btn-sm" id="btn-clear-analytics">Clear</button>
+          </div>
+        </div>
+        <div class="stat-grid" id="an-totals" style="margin-bottom:14px"></div>
+        <div class="sec" id="an-bandwidth-sec" style="margin-bottom:14px;display:none"></div>
+        <div class="sec" style="margin-bottom:14px"><div class="sec-hdr"><span class="sec-title">Peak Hours</span></div><div id="an-heat" style="padding:16px"></div></div>
+        <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px" class="h-split">
+          <div class="sec"><div class="sec-hdr"><span class="sec-title">Top Channels</span></div><div id="an-ch"></div></div>
+          <div class="sec"><div class="sec-hdr"><span class="sec-title">Top Users</span></div><div id="an-us"></div></div>
+        </div>
+        <div class="sec"><div class="sec-hdr"><span class="sec-title">Recent Sessions</span></div><div id="an-rec" style="max-height:45dvh;overflow-y:auto"></div></div>
+      </div>
+    </div>
+
+    <!-- PROVIDERS (Phase 13 A.5: Subscriptions + Dispatch under sub-tabs) -->
+    <div class="page" id="page-providers">
+      <div class="subtab-strip" data-subtab-host="providers">
+        <button class="subtab active" data-sub="subscriptions">Subscriptions</button>
+        <button class="subtab" data-sub="colors">Colors</button>
+        <button class="subtab" data-sub="dispatch">Dispatch</button>
+      </div>
+
+      <!-- Subscriptions pane -->
+      <div class="subtab-pane active" data-sub-pane="subscriptions">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Subscriptions</div><div class="pg-sub">IPTV providers &amp; expiry</div></div>
+          <button class="btn btn-green btn-sm" id="btn-toggle-add">+ Add New</button>
+        </div>
+        <div class="sec" id="add-form-sec" style="display:none;margin-bottom:14px">
+          <div class="sec-hdr"><span class="sec-title" id="sub-form-title">New Subscription</span></div>
+          <div class="form-grid">
+            <div class="f-field"><label class="f-label">Name</label><input class="f-input" id="a-name" placeholder="Provider name"></div>
+            <div class="f-field"><label class="f-label">Server URL</label><input class="f-input" id="a-url" placeholder="http://server.com:8080"></div>
+            <div class="f-field"><label class="f-label">Username</label><input class="f-input" id="a-user"></div>
+            <div class="f-field"><label class="f-label">Password</label><input class="f-input" id="a-pass" type="password"></div>
+            <div class="f-field"><label class="f-label">Max Streams</label><input class="f-input" id="a-max" type="number" value="1" min="1"></div>
+          </div>
+          <div style="padding:0 16px 16px;display:flex;gap:8px">
+            <button class="btn btn-green" id="btn-add-sub">Save</button>
+            <button class="btn btn-rose" id="btn-cancel-add">Cancel</button>
+          </div>
+        </div>
+        <div class="sec" id="subs-detail"></div>
+      </div>
+
+      <!-- Colors pane -->
+      <div class="subtab-pane" data-sub-pane="colors">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Provider <em>Colors</em></div><div class="pg-sub">Color-code each provider for Groups + variant dots</div></div>
+          <div class="pg-actions">
+            <button class="btn btn-green btn-sm" id="btn-pc-save">✓ Save</button>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sec-hdr"><span class="sec-title">Subscriptions</span><span class="text-xs">click a swatch to change</span></div>
+          <div id="pc-list" style="padding:12px 14px;display:flex;flex-direction:column;gap:12px"></div>
+        </div>
+      </div>
+
+      <!-- Dispatch pane (moved from Phase 12 Checkpoint C dispatch page) -->
+      <div class="subtab-pane" data-sub-pane="dispatch">
+        <div class="pg-hdr">
+          <div><div class="pg-title">Stream <em>Dispatcher</em></div><div class="pg-sub" id="dp-sub-lbl">—</div></div>
+          <div class="pg-actions">
+            <button class="btn btn-cyan btn-sm" id="btn-dp-refresh">⟳ Refresh</button>
+            <button class="btn btn-amber btn-sm" id="btn-dp-clear">🗑 Clear cache</button>
+          </div>
+        </div>
+
+        <!-- Stat strip -->
+        <div class="stat-grid" id="dp-stats" style="margin-bottom:14px"></div>
+
+        <!-- Per-sub stats -->
+        <div class="sec" style="margin-bottom:14px">
+          <div class="sec-hdr"><span class="sec-title">Per-Subscription Stats</span><span class="text-xs" id="dp-subs-hint">drain to stop new dispatches</span></div>
+          <div class="dp-sub-grid" id="dp-subs"></div>
+        </div>
+
+        <!-- Live decisions -->
+        <div class="sec" style="margin-bottom:14px">
+          <div class="sec-hdr">
+            <span class="sec-title">Live Decisions</span>
+            <span class="text-xs" id="dp-dec-hint">click a row to expand candidates</span>
+          </div>
+          <div class="dp-thead">
+            <div class="dp-c-ch">CHANNEL</div>
+            <div class="dp-c-user">USER</div>
+            <div class="dp-c-sub">PICKED SUB</div>
+            <div class="dp-c-cands">CANDS</div>
+            <div class="dp-c-fo">FO</div>
+            <div class="dp-c-age">AGE</div>
+            <div class="dp-c-act">ACT</div>
+          </div>
+          <div id="dp-decisions"></div>
+        </div>
+
+        <!-- Failover log -->
+        <div class="sec">
+          <div class="sec-hdr">
+            <span class="sec-title">Recent Failover Events</span>
+            <span class="text-xs" id="dp-fl-hint">last 50 FAILOVER / NO CANDIDATES log entries</span>
+          </div>
+          <div id="dp-failover-log"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- USERS (Phase 12) -->
+    <div class="page" id="page-users">
+      <div class="pg-hdr">
+        <div><div class="pg-title">Xtream <em>Users</em></div><div class="pg-sub" id="us-count-lbl">0 users</div></div>
+        <div class="pg-actions">
+          <button class="btn btn-cyan btn-sm" id="btn-us-refresh">⟳ Refresh</button>
+          <button class="btn btn-green btn-sm" id="btn-us-new">+ New User</button>
+        </div>
+      </div>
+
+      <!-- Stat strip -->
+      <div class="stat-grid" id="us-stats" style="margin-bottom:14px"></div>
+
+      <!-- Filter toolbar -->
+      <div class="sec" style="margin-bottom:0">
+        <div class="sec-hdr">
+          <span class="sec-title">Accounts</span>
+          <span id="us-summary" style="font-size:10px;color:var(--text3)"></span>
+        </div>
+
+        <!-- Selection action bar -->
+        <div id="us-sel-bar" style="display:none;padding:10px 14px;
+             background:rgba(0,229,255,0.07);border-bottom:1px solid rgba(0,229,255,0.2);
+             align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <span id="us-sel-info" style="font-size:11px;color:var(--cyan)">0 selected</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-sm btn-green" data-us-bulk="enable">Enable</button>
+            <button class="btn btn-sm btn-amber" data-us-bulk="disable">Disable</button>
+            <button class="btn btn-sm btn-violet" data-us-bulk="extend">Extend +30d</button>
+            <button class="btn btn-sm btn-rose"  data-us-bulk="kick">Kick</button>
+            <button class="btn btn-sm btn-rose"  data-us-bulk="delete">Delete</button>
+            <button class="btn btn-sm btn-ghost" id="btn-us-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Filter row -->
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="us-search" placeholder="Search username, IP, notes..." class="f-input" style="flex:1;min-width:180px;padding:8px 12px;font-size:12px">
+          <select id="us-status-filter" class="f-input" style="padding:8px 10px;font-size:12px;max-width:160px">
+            <option value="">All Statuses</option>
+            <option value="active">Active</option>
+            <option value="expiring">Expiring (≤7d)</option>
+            <option value="critical">Critical (≤24h)</option>
+            <option value="disabled">Disabled</option>
+            <option value="expired">Expired</option>
+          </select>
+          <select id="us-sort" class="f-input" style="padding:8px 10px;font-size:12px;max-width:170px">
+            <option value="username">Sort: Username</option>
+            <option value="status">Sort: Status</option>
+            <option value="expires">Sort: Expiry</option>
+            <option value="active">Sort: Active conn</option>
+            <option value="last_seen">Sort: Last seen</option>
+          </select>
+        </div>
+
+        <!-- Table header (desktop) / hidden on mobile -->
+        <div class="us-thead">
+          <div class="us-cell-chk"><input type="checkbox" id="us-chk-all"></div>
+          <div class="us-cell-name">USER</div>
+          <div class="us-cell-status">STATUS</div>
+          <div class="us-cell-exp">EXPIRES</div>
+          <div class="us-cell-conn">CONN</div>
+          <div class="us-cell-seen">LAST SEEN</div>
+          <div class="us-cell-act">ACTIONS</div>
+        </div>
+
+        <div id="us-table"></div>
+      </div>
+    </div>
+
+    <!-- USER DRAWER (Phase 12) -->
+    <div class="us-drawer-overlay" id="us-drawer-overlay"></div>
+    <aside class="us-drawer" id="us-drawer" aria-hidden="true">
+      <div class="drawer-drag-handle" data-drawer="us-drawer"></div>
+      <div class="us-drawer-hdr">
+        <div>
+          <div class="us-drawer-title" id="us-d-title">User</div>
+          <div class="us-drawer-sub" id="us-d-sub">—</div>
+        </div>
+        <button class="btn btn-ghost btn-sm us-d-close-desktop" id="us-d-close">✕</button>
+      </div>
+      <div class="us-drawer-body" id="us-d-body">
+        <div class="empty">Loading…</div>
+      </div>
+      <div class="us-drawer-foot">
+        <button class="btn btn-rose btn-sm" id="us-d-delete">Delete</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" id="us-d-cancel">Close</button>
+        <button class="btn btn-green btn-sm" id="us-d-save">✓ Save</button>
+      </div>
+    </aside>
+
+    <!-- SETTINGS DRAWER (Phase 13 A.5: Groups + Telegram behind gear icon) -->
+    <div class="settings-overlay" id="settings-overlay"></div>
+    <aside class="settings-drawer" id="settings-drawer" aria-hidden="true">
+      <div class="drawer-drag-handle" data-drawer="settings-drawer"></div>
+      <div class="settings-hdr">
+        <div>
+          <div class="settings-title">Settings</div>
+          <div class="settings-sub">Quality · EPG · Telegram · Account</div>
+        </div>
+        <button class="btn btn-ghost btn-sm settings-close-desktop" id="settings-close">✕</button>
+      </div>
+      <div class="subtab-strip" data-subtab-host="settings">
+        <button class="subtab active" data-stab="quality">Quality</button>
+        <button class="subtab" data-stab="epg">EPG</button>
+        <button class="subtab" data-stab="telegram">Telegram</button>
+        <button class="subtab" data-stab="account">Account</button>
+      </div>
+      <div class="settings-body">
+
+        <!-- Quality pane -->
+        <div class="subtab-pane active" data-stab-pane="quality">
+          <div class="pg-hdr">
+            <div><div class="pg-title">Quality <em>Preference</em></div><div class="pg-sub">Order used when no per-channel override is set</div></div>
+            <div class="pg-actions">
+              <button class="btn btn-green btn-sm" id="btn-save-quality-st">✓ Save</button>
+            </div>
+          </div>
+          <div class="sec" style="margin-bottom:14px">
+            <div class="sec-hdr"><span class="sec-title">Preference Order</span></div>
+            <div style="padding:14px 16px">
+              <div style="color:var(--text2);font-size:11px;margin-bottom:12px;line-height:1.6">
+                Server picks <span style="color:var(--cyan);font-weight:700">first available</span> quality. Use ▲▼ to reorder.
+              </div>
+              <div id="q-pref-list" style="display:flex;flex-direction:column;gap:8px;max-width:420px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- EPG pane -->
+        <div class="subtab-pane" data-stab-pane="epg">
+          <div class="pg-hdr">
+            <div><div class="pg-title">EPG <em>Guide</em></div><div class="pg-sub">7 days · all channels</div></div>
+          </div>
+          <div class="stat-grid" id="epg-stats" style="margin-bottom:14px"></div>
+          <div class="sec">
+            <div class="sec-hdr"><span class="sec-title">EPG URLs</span></div>
+            <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px">
+              <p style="font-size:11px;color:var(--text2);line-height:1.7">
+                Add in Plex: <strong style="color:var(--cyan)">Settings → Live TV → Edit Guide → XMLTV</strong>
+              </p>
+              <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px">
+                <div style="font-size:9px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">XML</div>
+                <div id="epg-xml" style="font-size:12px;color:var(--cyan);word-break:break-all;margin-bottom:10px">—</div>
+                <button class="btn btn-cyan btn-sm" style="width:100%" id="btn-epg-xml">Copy URL</button>
+              </div>
+              <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px">
+                <div style="font-size:9px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">GZ (compressed)</div>
+                <div id="epg-gz" style="font-size:12px;color:var(--violet);word-break:break-all;margin-bottom:10px">—</div>
+                <button class="btn btn-violet btn-sm" style="width:100%" id="btn-epg-gz">Copy URL</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Telegram pane -->
+        <div class="subtab-pane" data-stab-pane="telegram">
+          <div class="pg-hdr">
+            <div><div class="pg-title">Telegram <em>Alerts</em></div></div>
+            <div class="pg-actions">
+              <button class="btn btn-violet btn-sm" id="btn-tg-test">🔔 Test</button>
+              <button class="btn btn-green btn-sm" id="btn-tg-save">✓ Save</button>
+            </div>
+          </div>
+          <div class="sec" style="margin-bottom:14px">
+            <div class="sec-hdr"><span class="sec-title">Connection</span></div>
+            <div class="form-grid">
+              <div class="f-field full"><label class="f-label">Bot Token</label><input class="f-input" id="tg-token" type="password" placeholder="(set — enter new to change)"></div>
+              <div class="f-field"><label class="f-label">Chat ID</label><input class="f-input" id="tg-chat" placeholder="123456789"></div>
+              <div class="f-field"><label class="f-label">Daily Summary Hour (0–23)</label><input class="f-input" id="tg-hour" type="number" min="0" max="23" value="8"></div>
+              <div class="f-field"><label class="f-label">CPU Warning %</label><input class="f-input" id="tg-cpu-warn" type="number" value="85"></div>
+              <div class="f-field"><label class="f-label">CPU Critical %</label><input class="f-input" id="tg-cpu-crit" type="number" value="95"></div>
+              <div class="f-field"><label class="f-label">Memory Warning %</label><input class="f-input" id="tg-mem-warn" type="number" value="90"></div>
+            </div>
+            <div style="padding:0 16px 16px;display:flex;align-items:center;gap:10px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text2)">
+                <input type="checkbox" id="tg-enabled" style="width:16px;height:16px;accent-color:var(--cyan)">
+                Enable Telegram Alerts
+              </label>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="sec-hdr"><span class="sec-title">Alert Events</span></div>
+            <div class="hrow"><span class="hrow-l">Server Down / Online</span><span>🔴 / ✅</span></div>
+            <div class="hrow"><span class="hrow-l">Stream Stalled</span><span>⚠️</span></div>
+            <div class="hrow"><span class="hrow-l">CPU Warning / Critical</span><span>⚠️ / 🔥</span></div>
+            <div class="hrow"><span class="hrow-l">Failed Login</span><span>🚨</span></div>
+            <div class="hrow"><span class="hrow-l">Subscription Expiring</span><span>⏰</span></div>
+            <div class="hrow"><span class="hrow-l">Startup / Shutdown</span><span>🚀 / 🔴</span></div>
+            <div class="hrow"><span class="hrow-l">Daily Summary</span><span>📊</span></div>
+          </div>
+        </div>
+
+        <!-- Account pane -->
+        <div class="subtab-pane" data-stab-pane="account">
+          <div class="pg-hdr">
+            <div><div class="pg-title">Admin <em>Account</em></div><div class="pg-sub">Dashboard login credentials</div></div>
+          </div>
+          <div class="sec" style="margin-bottom:14px">
+            <div class="sec-hdr"><span class="sec-title">Change Username</span></div>
+            <div class="form-grid">
+              <div class="f-field full"><label class="f-label">New Username</label><input class="f-input" id="adm-username" placeholder="admin"></div>
+            </div>
+            <div style="padding:0 16px 14px;display:flex;justify-content:flex-end">
+              <button class="btn btn-green btn-sm" id="btn-adm-username">✓ Save Username</button>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="sec-hdr"><span class="sec-title">Change Password</span></div>
+            <div class="form-grid">
+              <div class="f-field full"><label class="f-label">Current Password</label><input class="f-input" id="adm-pw-current" type="password" placeholder="Current password"></div>
+              <div class="f-field full"><label class="f-label">New Password</label><input class="f-input" id="adm-pw-new" type="password" placeholder="New password (min 4 chars)"></div>
+              <div class="f-field full"><label class="f-label">Confirm New Password</label><input class="f-input" id="adm-pw-confirm" type="password" placeholder="Repeat new password"></div>
+            </div>
+            <div style="padding:0 16px 14px;display:flex;justify-content:flex-end">
+              <button class="btn btn-green btn-sm" id="btn-adm-password">✓ Save Password</button>
+            </div>
+          </div>
+        </div>
+        <!-- end Account pane -->
+
+      </div>
+      <div class="settings-foot drawer-mobile-foot">
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" onclick="closeSettings()">Close</button>
+      </div>
+    </aside>
+
+  </div><!-- /fold-content -->
+</div><!-- /fold-wrap -->
+
+<!-- KEYBOARD SHORTCUT HELP (Phase 13 Item 6) -->
+<div id="kb-help" class="kb-help">
+  <div id="kb-help-overlay" class="kb-help-overlay"></div>
+  <div class="kb-help-panel">
+    <div class="kb-help-header">
+      <span>Keyboard Shortcuts</span>
+      <button onclick="document.getElementById('kb-help').classList.remove('open')" class="kb-help-close">&times;</button>
+    </div>
+    <div class="kb-help-body">
+      <div class="kb-section">
+        <h4>Navigation</h4>
+        <div class="kb-row"><kbd>g</kbd> <kbd>o</kbd> <span>Overview</span></div>
+        <div class="kb-row"><kbd>g</kbd> <kbd>c</kbd> <span>Channels</span></div>
+        <div class="kb-row"><kbd>g</kbd> <kbd>u</kbd> <span>Users</span></div>
+        <div class="kb-row"><kbd>g</kbd> <kbd>m</kbd> <span>Monitoring</span></div>
+        <div class="kb-row"><kbd>g</kbd> <kbd>s</kbd> <span>Subscriptions</span></div>
+        <div class="kb-row"><kbd>g</kbd> <kbd>d</kbd> <span>Dispatch</span></div>
+        <div class="kb-row"><kbd>g</kbd> <kbd>e</kbd> <span>EPG</span></div>
+      </div>
+      <div class="kb-section">
+        <h4>Actions</h4>
+        <div class="kb-row"><kbd>r</kbd> <span>Force refresh</span></div>
+        <div class="kb-row"><kbd>Esc</kbd> <span>Close drawer / modal</span></div>
+        <div class="kb-row"><kbd>?</kbd> <span>Toggle this help</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV (mobile only) -->
+<div class="bottom-nav">
+  <button class="nav-btn active" data-page="overview"><span class="nb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span><span class="nb-label">Home</span></button>
+  <button class="nav-btn" data-page="channels"><span class="nb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/><circle cx="7" cy="6" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/></svg></span><span class="nb-label">Channels</span></button>
+  <button class="nav-btn" data-page="groups" style="position:relative"><span class="nb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="3" y="12" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="5" rx="1"/><path d="M3 21h7M14 21h7"/></svg></span><span class="nb-label">Groups</span><span class="nb-badge" id="h-grp-badge" style="display:none">!</span></button>
+  <button class="nav-btn" data-page="monitoring" style="position:relative"><span class="nb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2-6 3 12 2.5-6 1.5 0 2-3h4"/></svg></span><span class="nb-label">Monitor</span><span class="nb-badge" id="h-badge" style="display:none">0</span></button>
+  <button class="nav-btn" id="btn-more"><span class="nb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></span><span class="nb-label">More</span></button>
+</div>
+
+</body>
+</html>

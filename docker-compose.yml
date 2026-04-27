@@ -1,0 +1,28 @@
+services:
+  iptv-tuner:
+    build: ./app
+    container_name: iptv-tuner
+    restart: unless-stopped
+    user: "1028:100"
+    ports:
+      - "127.0.0.1:5004:5004"
+      - "192.168.1.200:5004:5004"
+      - "34343:34343"
+    volumes:
+      - /volume1/docker/AQ-iptv-tuner/config:/config
+    env_file:
+      - ./app/.env
+    environment:
+      - CONFIG_FILE=/config/config.json
+      - TZ=Asia/Riyadh
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5004/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

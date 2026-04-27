@@ -1,0 +1,16 @@
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Synology metadata
+@eaDir
+**/@eaDir
+
+# Python bytecode
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Test files (not needed in production image)
+test_*.py

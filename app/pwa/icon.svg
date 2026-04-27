@@ -1,0 +1,22 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0%" stop-color="#0d2035"/>
+      <stop offset="100%" stop-color="#081525"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="108" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="108" fill="none" stroke="rgba(0,229,255,0.14)" stroke-width="2"/>
+  <!-- Broadcast arcs (source at 256,305) -->
+  <path d="M 96 305 A 160 160 0 0 1 416 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.35"/>
+  <path d="M 146 305 A 110 110 0 0 1 366 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.65"/>
+  <path d="M 196 305 A 60 60 0 0 1 316 305" fill="none" stroke="#00e5ff" stroke-width="28" stroke-linecap="round" opacity="0.95"/>
+  <!-- Center dot -->
+  <circle cx="256" cy="305" r="22" fill="#00e5ff"/>
+  <!-- AQ text -->
+  <text x="256" y="430"
+    font-family="'Arial Black','Helvetica Neue',Arial,sans-serif"
+    font-weight="900" font-size="100"
+    fill="#00e5ff" text-anchor="middle" letter-spacing="-3">AQ</text>
+</svg>
