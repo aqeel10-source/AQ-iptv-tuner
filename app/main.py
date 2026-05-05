@@ -2733,7 +2733,12 @@ class XtreamLegacyURLMiddleware(BaseHTTPMiddleware):
                 new_path = f"/live/{u_raw}/{p_raw}/{sid}.{ext}"
                 request.scope["path"]      = new_path
                 request.scope["raw_path"]  = new_path.encode()
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if "No response" in str(exc) or "disconnect" in str(exc).lower():
+                return Response(status_code=499)
+            raise
 
 class StreamPortFilterMiddleware(BaseHTTPMiddleware):
     """Phase 11.5: when the request hits the public stream listener
@@ -2761,7 +2766,12 @@ class StreamPortFilterMiddleware(BaseHTTPMiddleware):
             if not any(path == p or path.startswith(p) for p in self.STREAM_ALLOWED):
                 from fastapi.responses import JSONResponse
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if "No response" in str(exc) or "disconnect" in str(exc).lower():
+                return Response(status_code=499)
+            raise
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Inject browser security headers on admin-port responses. Skipped on
@@ -2782,7 +2792,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         ),
     }
     async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RuntimeError as exc:
+            if "No response" in str(exc) or "disconnect" in str(exc).lower():
+                return Response(status_code=499)
+            raise
         srv = request.scope.get("server") or (None, None)
         socket_port = srv[1] if isinstance(srv, (tuple, list)) and len(srv) > 1 else None
         stream_port = (load_config().get("server") or {}).get("stream_port") or 0
@@ -2806,14 +2821,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return Response("Forbidden", status_code=403)
         path = request.url.path
         if any(path.startswith(p) or path == p for p in self.OPEN):
-            return await call_next(request)
+            try:
+                return await call_next(request)
+            except RuntimeError as exc:
+                if "No response" in str(exc) or "disconnect" in str(exc).lower():
+                    return Response(status_code=499)
+                raise
         if path.startswith("/api/") or path == "/":
             if not _check_session(request):
                 if path.startswith("/api/"):
                     from fastapi.responses import JSONResponse
                     return JSONResponse({"detail": "Unauthorized"}, status_code=401)
                 return Response(status_code=302, headers={"Location": "/login"})
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if "No response" in str(exc) or "disconnect" in str(exc).lower():
+                return Response(status_code=499)
+            raise
 
 app.add_middleware(AuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
