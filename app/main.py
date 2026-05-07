@@ -317,10 +317,6 @@ class LogEntry:
 _TS_NULL_PACKET = b"\x47\x1f\xff\x10" + (b"\x00" * 184)
 _TS_NULL_BURST  = _TS_NULL_PACKET * 14   # ~2.6 KB worth (~30 ms at 1 Mbps)
 
-# Light 7A: HDHR/Plex jitter-smoothing buffer (Xtream path unchanged)
-_HDHR_PREFILL_CHUNKS = 5   # chunks to accumulate before starting delivery (~2-3s)
-_HDHR_BUFFER_MAXSIZE = 64  # max intermediate buffer depth per HDHR viewer (~10s)
-
 class ChannelMux:
     BUFFER_CHUNKS = 64
     MAX_VIEWERS   = 10
@@ -355,10 +351,6 @@ class ChannelMux:
         self.viewer_ips: List[str] = []
         self.drops: Dict[int, int] = {}  # queue id -> dropped chunk count (A20)
         self._failover_in_progress = False  # A11: skip finally's slot release when swapping sub
-        self.hdhr_buffers: Dict[int, asyncio.Queue] = {}  # Light 7A: id(q) → jitter buf
-        self.hdhr_tasks:   Dict[int, asyncio.Task]  = {}  # Light 7A: id(q) → drain task
-        self._jitter_failed_subs: set = set()  # Jitter failover: providers to skip this session
-        self._stall_alert_times: list = []    # Throttle: timestamps of stall-restart alerts
     @property
     def viewer_count(self): return len(self.queues)
     @property
@@ -383,17 +375,14 @@ class ChannelMux:
         self._task = asyncio.create_task(self._fetch())
     async def _publish(self, chunk: bytes) -> None:
         """Phase 11: single fan-out path used by both the normal stream loop
-        and the null-packet stuffer that runs during mid-stream failover.
-        Light 7A: HDHR/Plex queues are routed through their jitter buffers."""
+        and the null-packet stuffer that runs during mid-stream failover."""
         self.bytes_total += len(chunk)
         self.last_chunk_at = time.time()
         self.buffer.append(chunk)
         for q in self.queues:
-            qid = id(q)
-            buf = self.hdhr_buffers.get(qid)
-            target = buf if buf is not None else q
-            try: target.put_nowait(chunk)
+            try: q.put_nowait(chunk)
             except asyncio.QueueFull:
+                qid = id(q)
                 self.drops[qid] = self.drops.get(qid, 0) + 1
                 if self.drops[qid] % 50 == 1:
                     log.warning("MUX DROP  %s — slow viewer dropped %d chunks",
@@ -487,7 +476,6 @@ class ChannelMux:
                         _stutter_count = 0  # gaps > 1s
                         _LOG_INTERVAL = 60  # log timing summary every 60s
                         _next_log_ts = _prev_chunk_ts + _LOG_INTERVAL
-                        _jitter_break = False
                         async for chunk in resp.aiter_bytes(188 * 1024):
                             if not self._running: return
                             now = time.time()
@@ -502,36 +490,6 @@ class ChannelMux:
                                 log.warning("CHUNK GAP  %s  %.1fs gap (chunk #%d, %d KB, sub=%s)",
                                             self.ch.name, gap, _chunk_count,
                                             len(chunk) // 1024, cand.sub_name)
-                            # Stall failover: stream went silent for 10s — provider is dead.
-                            # Only switch on a true stall, not on jitter, to avoid showing a
-                            # different time-offset of the same live channel to the viewer.
-                            if gap > 10.0 and self.decision and first_chunk_seen:
-                                ordered = self.decision.ordered
-                                self._jitter_failed_subs.add(cand.sub_name)
-                                next_idx = next(
-                                    (i for i in range(len(ordered))
-                                     if i != self._cand_idx
-                                     and ordered[i].sub_name not in self._jitter_failed_subs),
-                                    None)
-                                if next_idx is not None:
-                                    next_sub = ordered[next_idx].sub_name
-                                    log.warning(
-                                        "STALL FAILOVER  %s  %.1fs stall  %s → %s",
-                                        self.ch.name, gap, cand.sub_name, next_sub)
-                                    asyncio.create_task(tg_send(tg_alert(
-                                        "🔀", "Stall Failover",
-                                        f"Channel: <b>{self.ch.name}</b>\n"
-                                        f"{cand.sub_name} → <b>{next_sub}</b>\n"
-                                        f"Stall: {gap:.0f}s")))
-                                    self._cand_idx = next_idx
-                                    _jitter_break = True
-                                    break
-                                else:
-                                    log.warning(
-                                        "STALL FAILOVER  %s  %.1fs stall"
-                                        "  — no alternative provider",
-                                        self.ch.name, gap)
-                                    self._jitter_failed_subs.discard(cand.sub_name)
                             if now >= _next_log_ts:
                                 avg = (_gap_sum / _chunk_count) if _chunk_count else 0
                                 log.info("CHUNK STATS  %s  %d chunks in %ds, "
@@ -542,8 +500,22 @@ class ChannelMux:
                                          avg * 1000, _gap_max * 1000,
                                          _stutter_count, self.bitrate_kbps,
                                          cand.sub_name)
-                                # Log jitter stats for monitoring — no failover here.
-                                # Stall failover (gap > 10s) is handled per-chunk above.
+                                # Stage 1 jitter detection: log when thresholds
+                                # exceeded so we can tune before wiring up real
+                                # failover (Phase 17).
+                                if (avg > 1.0 or _stutter_count > 8) and self.decision:
+                                    ordered = self.decision.ordered
+                                    if len(ordered) > 1:
+                                        next_idx  = (self._cand_idx + 1) % len(ordered)
+                                        next_cand = ordered[next_idx].sub_name
+                                    else:
+                                        next_cand = "no alternative"
+                                    log.warning(
+                                        "JITTER FAILOVER WOULD TRIGGER  %s  "
+                                        "avg=%.0fms stutters=%d/min  "
+                                        "sub=%s → next: %s",
+                                        self.ch.name, avg * 1000, _stutter_count,
+                                        cand.sub_name, next_cand)
                                 _chunk_count = 0
                                 _gap_sum = 0.0
                                 _gap_max = 0.0
@@ -557,21 +529,6 @@ class ChannelMux:
                                     f"({self.decision.reason})",
                                     sub=cand.sub_name)
                             await self._publish(chunk)
-                        # Jitter failover: break out of aiter_bytes → swap provider.
-                        if _jitter_break:
-                            self.decision.failover_count += 1
-                            if cfg_d["null_packet_fill_during_swap"]:
-                                await self._publish(_TS_NULL_BURST)
-                            if not await self._advance_until_usable():
-                                state.log_event("error", "NO CANDIDATES",
-                                    f"{self.ch.name}: jitter failover exhausted",
-                                    sub=cand.sub_name)
-                                return
-                            state.log_event("stream", "STALL FAILOVER",
-                                f"{self.ch.name}: switched to "
-                                f"{self.decision.ordered[self._cand_idx].sub_name}",
-                                sub=self.decision.ordered[self._cand_idx].sub_name)
-                            continue
                         # Normal stream end (clean EOF from upstream)
                         return
                 except asyncio.CancelledError:
@@ -650,11 +607,7 @@ class ChannelMux:
             log.info("MUX STOP   %s", self.ch.name)
             async with self._lock:
                 for q in self.queues:
-                    # Light 7A: route sentinel through jitter buffer so drain
-                    # task delivers it after flushing remaining buffered chunks.
-                    buf = self.hdhr_buffers.get(id(q))
-                    target = buf if buf is not None else q
-                    try: target.put_nowait(None)
+                    try: q.put_nowait(None)
                     except asyncio.QueueFull: pass
             state.mux.pop(self.channel_key, None)
 
@@ -669,37 +622,6 @@ class ChannelMux:
                 return True
             self._cand_idx += 1
         return False
-    async def _hdhr_drain(self, q: asyncio.Queue, buf: asyncio.Queue) -> None:
-        """Light 7A: steady-rate drain of the per-viewer jitter buffer into the
-        HDHR/Plex viewer queue. Absorbs upstream gaps up to ~_HDHR_PREFILL_CHUNKS
-        chunks deep. Xtream viewers never enter this path."""
-        # Wait for initial pre-fill before starting delivery
-        for _ in range(100):
-            if buf.qsize() >= _HDHR_PREFILL_CHUNKS or not self._running:
-                break
-            await asyncio.sleep(0.05)
-        while True:
-            try:
-                chunk = await asyncio.wait_for(buf.get(), timeout=2.0)
-            except asyncio.TimeoutError:
-                if not self._running:
-                    return
-                continue
-            except asyncio.CancelledError:
-                return
-            if chunk is None:
-                try: q.put_nowait(None)
-                except asyncio.QueueFull: pass
-                return
-            try:
-                q.put_nowait(chunk)
-            except asyncio.QueueFull:
-                pass
-            # bitrate_kbps is KB/s (bytes_total/1024 / elapsed). Pace at that rate.
-            # floor 250 KB/s ≈ 2 Mbps to avoid over-sleeping on startup.
-            br_kbs = max(self.bitrate_kbps, 250)  # KB/s
-            await asyncio.sleep(len(chunk) / (br_kbs * 1024))
-
     async def subscribe(self, viewer_ip="", xtream_user: Optional[str] = None):
         q = asyncio.Queue(maxsize=self.BUFFER_CHUNKS * 2)
         for chunk in self.buffer:
@@ -710,11 +632,6 @@ class ChannelMux:
             self.viewer_ips.append(viewer_ip)
             self.queue_users[id(q)] = xtream_user  # None for HDHR/Plex (resolved later via _active_session_users)
             self.queue_ids[id(q)]   = secrets.token_hex(4)  # stable id for per-viewer kill (all client types)
-            # Light 7A: HDHR/Plex viewers get a jitter-smoothing intermediate buffer
-            if xtream_user is None:
-                buf = asyncio.Queue(maxsize=_HDHR_BUFFER_MAXSIZE)
-                self.hdhr_buffers[id(q)] = buf
-                self.hdhr_tasks[id(q)] = asyncio.create_task(self._hdhr_drain(q, buf))
         total_v = sum(m.viewer_count for m in state.mux.values())
         if total_v > state.daily_stats["peak_viewers"]:
             state.daily_stats["peak_viewers"] = total_v
@@ -735,10 +652,6 @@ class ChannelMux:
                 if idx < len(self.viewer_ips): self.viewer_ips.pop(idx)
                 self.queue_users.pop(id(q), None)
                 self.queue_ids.pop(id(q), None)
-                # Light 7A: cancel drain task and drop jitter buffer
-                task = self.hdhr_tasks.pop(id(q), None)
-                if task: task.cancel()
-                self.hdhr_buffers.pop(id(q), None)
             except ValueError: pass
         # Use whichever label session_start stored (xtream user if set, else IP)
         # so VIEWER LEFT mirrors VIEWER JOIN.
@@ -755,9 +668,7 @@ class ChannelMux:
         if self._task: self._task.cancel()
         async with self._lock:
             for q in self.queues:
-                buf = self.hdhr_buffers.get(id(q))
-                target = buf if buf is not None else q
-                try: target.put_nowait(None)
+                try: q.put_nowait(None)
                 except: pass
         state.mux.pop(self.channel_key, None)
     async def kick_queue_by_id(self, qid: str) -> bool:
@@ -929,7 +840,7 @@ async def tg_send(text: str, parse_mode: str = "HTML"):
         log.warning("Telegram send failed: %s", exc)
 
 def tg_alert(icon: str, title: str, detail: str) -> str:
-    host = load_config().get("hostname", "iptv-tuner")
+    host = "iptv.aq10.top"
     ts = datetime.now().strftime("%H:%M:%S")
     return f"{icon} <b>{title}</b>\n{'─' * 24}\n{detail}\n{'─' * 24}\n🕐 {ts}  ·  <i>{host}</i>"
 
@@ -979,7 +890,7 @@ async def _tg_cmd_status() -> str:
         f"🧠  RAM           {sys.get('mem_mb', '?')} MB ({sys.get('mem_pct', '?')}%)",
         f"👤  Xtream users  {len(state.users)}",
         sep,
-        f"🕐 {datetime.now().strftime('%H:%M:%S')}  ·  <i>{load_config().get('hostname', 'iptv-tuner')}</i>",
+        f"🕐 {datetime.now().strftime('%H:%M:%S')}  ·  <i>iptv.aq10.top</i>",
     ]
     return "\n".join(lines)
 
@@ -1000,7 +911,7 @@ async def _tg_cmd_streams() -> str:
             f"   👤 {viewer_str}\n"
             f"   📊 {d.get('bitrate_kbps', 0)} kbps  ·  ⏱ {up_m}m {up_sec}s")
     lines.append(sep)
-    lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}  ·  <i>{load_config().get('hostname', 'iptv-tuner')}</i>")
+    lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}  ·  <i>iptv.aq10.top</i>")
     return "\n".join(lines)
 
 async def _tg_cmd_users() -> str:
@@ -1018,7 +929,7 @@ async def _tg_cmd_users() -> str:
             f"   🔌 {conns} conns  ·  📅 exp {exp}\n"
             f"   👁 last seen {last}")
     lines.append(sep)
-    lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}  ·  <i>{load_config().get('hostname', 'iptv-tuner')}</i>")
+    lines.append(f"🕐 {datetime.now().strftime('%H:%M:%S')}  ·  <i>iptv.aq10.top</i>")
     return "\n".join(lines)
 
 async def _tg_cmd_kick(args: str) -> str:
@@ -1467,15 +1378,16 @@ class TunerState:
                                     err_msg   = f"HTTP {resp.status_code}"
                                     transient = True
                                     raise RuntimeError(err_msg)  # fall through to retry
-                                # Phase 17: filter during parse — only keep channels that
-                                # pass the group filter so we never hold 250K+ Channel objects
-                                # in memory simultaneously. Rejected objects are freed
-                                # immediately, reducing peak RSS from ~450 MB to <1 MB.
-                                async for ch in _parse_m3u(resp):
-                                    groups_raw[ch.group] = groups_raw.get(ch.group, 0) + 1
-                                    total_raw += 1
-                                    if self._group_allowed(ch.group):
-                                        parsed.append(ch)
+                                # Filter INSIDE the parser so Channel objects are
+                                # never built for rejected groups (saves ~900 MB RAM).
+                                # groups_raw is populated for ALL provider groups so
+                                # the admin UI group-selector stays fully populated.
+                                async for ch in _parse_m3u(
+                                        resp,
+                                        group_filter=self._group_allowed,
+                                        groups_out=groups_raw):
+                                    parsed.append(ch)
+                                total_raw = sum(groups_raw.values())
                                 err_class = None  # success
                                 break
                         except (httpx.TimeoutException, httpx.NetworkError,
@@ -2185,24 +2097,9 @@ _active_session_users: Dict[str, str] = {}   # same key -> resolved plex user
 
 async def _resolve_and_update_user(row_id: int, active_key: str,
                                    channel: str, channel_key: str, viewer_ip: str):
-    """Resolve the real Plex username (polls Plex) and update the row + cache.
-
-    Plex live-TV sessions via HDHR can take 20-60s to appear in /status/sessions.
-    We retry up to 3 more times (each a 12s poll, spaced 10s apart = ~78s total)
-    and bail early if the viewer has already left.
-    """
+    """Resolve the real Plex username (polls Plex) and update the row + cache."""
     try:
         plex_user = await plex_user_for_channel(channel, channel_key)
-        if not plex_user:
-            for retry in range(3):
-                await asyncio.sleep(10)
-                if active_key not in _active_sessions:
-                    return  # viewer left before we resolved — nothing to update
-                plex_user = await plex_user_for_channel(channel, channel_key)
-                if plex_user:
-                    log.info("plex-resolve: resolved on retry %d for %r → %s",
-                             retry + 1, channel, plex_user)
-                    break
         if not plex_user:
             fallback = await resolve_plex_user(viewer_ip)
             # Only use the fallback if it resolved to a real name (not just the IP back).
@@ -2280,8 +2177,23 @@ async def session_end(channel_key: str, channel: str, viewer_ip: str, bytes_tota
         log.warning("session_end DB error: %s", exc)
 
 # ── M3U Parser ────────────────────────────────────────────────────────────────
-async def _parse_m3u(resp: httpx.Response):
-    """Parse an M3U stream into Channel objects."""
+_RE_GROUP = re.compile(r'group-title="([^"]*)"')
+
+async def _parse_m3u(resp: httpx.Response,
+                     group_filter=None,
+                     groups_out: dict | None = None):
+    """Parse an M3U stream into Channel objects.
+
+    group_filter  — optional callable(group_name) → bool.  When provided,
+                    Channel objects are only built and yielded for channels
+                    whose group passes the filter.  This cuts peak RAM from
+                    ~1 GB (all 250 K channels) to <150 MB (filtered set).
+
+    groups_out    — optional dict that receives {group_name: count} for EVERY
+                    channel seen, regardless of the filter.  Keeps the admin
+                    UI group-selector fully populated even when only a subset
+                    of channels is loaded.
+    """
     auto_num = 1; info = ""; buf = ""
     header_seen = False
     async for raw in resp.aiter_bytes(32768):
@@ -2296,12 +2208,24 @@ async def _parse_m3u(resp: httpx.Response):
             header_seen = True
             if line.startswith("#EXTINF"): info = line
             elif info and not line.startswith("#"):
+                # ── Cheap group extraction BEFORE building any objects ──────
+                gm    = _RE_GROUP.search(info)
+                group = gm.group(1).strip() if gm else "Uncategorized"
+
+                # Always count this channel in groups_out so admin UI sees all
+                if groups_out is not None:
+                    groups_out[group] = groups_out.get(group, 0) + 1
+
+                # Skip expensive object construction when group is filtered out
+                if group_filter is not None and not group_filter(group):
+                    info = ""
+                    continue
+
                 def _a(pat, d="", il=info):
                     m = re.search(pat, il); return m.group(1).strip() if m else d
                 name   = _a(r",(.+)$") or f"Ch {auto_num}"
                 tvg_id = _a(r'tvg-id="([^"]*)"')
                 logo   = _a(r'tvg-logo="([^"]*)"')
-                group  = _a(r'group-title="([^"]*)"') or "Uncategorized"
                 ch_num = _a(r'tvg-chno="([^"]*)"') or str(auto_num)
                 sid    = re.sub(r"\.\w+$", "", line.rstrip("/").split("/")[-1])
                 ch_id  = tvg_id or hashlib.md5(name.encode()).hexdigest()[:10]
@@ -2363,16 +2287,7 @@ async def health_monitor():
                     state.add_alert("warning", f"Stream stalled, restarting: {mux.ch.name}")
                     idle = int(time.time()-mux.last_chunk_at)
                     state.log_event("health", "STALL RESTART", f"{mux.ch.name} — no data for {idle}s")
-                    # Alert only if this channel stalls 3+ times within an hour
-                    now_ts = time.time()
-                    mux._stall_alert_times = [t for t in mux._stall_alert_times if now_ts - t < 3600]
-                    mux._stall_alert_times.append(now_ts)
-                    if len(mux._stall_alert_times) >= 3:
-                        asyncio.create_task(tg_send(tg_alert(
-                            "⚠️", "Stream Stalling Repeatedly",
-                            f"Channel: <b>{mux.ch.name}</b>\n"
-                            f"{len(mux._stall_alert_times)}× stalls in last hour\n"
-                            f"Last idle: {idle}s")))
+                    asyncio.create_task(tg_send(tg_alert("⚠️", "Stream Stalled — Auto-Restarting", f"Channel: <b>{mux.ch.name}</b>\nNo data for {idle}s — restarting now")))
                     ch = mux.ch; sub = mux.sub
                     await mux.kill_all(); await asyncio.sleep(2)
                     nm = ChannelMux(key, ch, sub); state.mux[key] = nm; await nm.start()
@@ -2570,8 +2485,7 @@ async def lifespan(app: FastAPI):
                 uptime = int(time.time() - state.started_at)
                 h = uptime // 3600; m = (uptime % 3600) // 60
                 sep = "─" * 24
-                sys_info = (state.health or {}).get("system", {})
-                hostname = load_config().get("hostname", "iptv-tuner")
+                sys_info = state.health or {}
                 msg = (
                     f"📊 <b>Daily Summary</b>\n"
                     f"{sep}\n"
@@ -2585,7 +2499,7 @@ async def lifespan(app: FastAPI):
                     f"{sep}\n"
                     f"💻  CPU  {sys_info.get('cpu_pct', '?')}%  ·  🧠  RAM  {sys_info.get('mem_mb', '?')} MB\n"
                     f"{sep}\n"
-                    f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  <i>{hostname}</i>"
+                    f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  <i>iptv.aq10.top</i>"
                 )
                 await tg_send(msg)
                 # Phase 10: warn about Xtream users about to expire so the
@@ -3146,6 +3060,23 @@ async def _get_or_start_mux(channel_key: str, ch: "Channel",
     return mux
 
 
+# ── Plex jitter buffer ───────────────────────────────────────────────────────
+# Plex uses /stream/{key} (HDHR) and has minimal internal buffering — it drops
+# the stream on any upstream gap > ~2s. Xtream clients (VLC/Kodi) buffer 5–10s
+# themselves so they're unaffected. This pre-buffer + paced drain is applied
+# ONLY to the HDHR endpoint so Xtream latency is never touched.
+#
+# Design: a background filler task pulls chunks from the mux queue into a local
+# deque. The generator drains the deque at _PLEX_CHUNK_S s/chunk (≈ natural
+# video rate). Pre-filling _PLEX_PREBUF_N chunks before the first byte creates
+# a cushion that absorbs typical 1–3s upstream jitter without stalling Plex.
+# If the upstream gap exceeds the buffer depth, Plex will stall — unavoidable
+# without an alternate source. Cap at _PLEX_MAX_BUF chunks; oldest dropped when
+# exceeded so the stream stays as close to live as possible.
+_PLEX_PREBUF_N = 10    # chunks to buffer before first byte (~5s)
+_PLEX_CHUNK_S  = 0.58  # initial drain pace s/chunk; updated dynamically per stream
+_PLEX_MAX_BUF  = 50    # safety cap; drop oldest when exceeded
+
 @app.get("/stream/{channel_key}")
 async def stream(channel_key: str, request: Request):
     # Phase 9: refuse new streams while we're draining. Plex honours Retry-After
@@ -3164,17 +3095,68 @@ async def stream(channel_key: str, request: Request):
     # and did the upstream actually deliver bytes.
     asyncio.create_task(_notify_stream_start(
         channel_key, ch.name, ch.quality, mux.sub.name, viewer_ip))
+
     async def viewer_stream():
-        try:
+        buf: collections.deque = collections.deque()
+        upstream_eof = False
+        chunk_dur = _PLEX_CHUNK_S          # starts conservative; updated dynamically
+        _ivs: collections.deque = collections.deque(maxlen=20)  # clean interval samples
+
+        async def _filler():
+            nonlocal upstream_eof, chunk_dur
+            t_prev = None
             while True:
-                try: chunk = await asyncio.wait_for(queue.get(), timeout=30)
-                except asyncio.TimeoutError: break
-                if chunk is None: break
-                yield chunk
-                if await request.is_disconnected(): break
-        except asyncio.CancelledError: pass
-        except Exception as exc: log.warning("Viewer error [%s]: %s", ch.name, exc)
-        finally: await mux.unsubscribe(queue, viewer_ip)
+                try:
+                    chunk = await asyncio.wait_for(queue.get(), timeout=30)
+                except asyncio.TimeoutError:
+                    upstream_eof = True
+                    return
+                if chunk is None:
+                    upstream_eof = True
+                    return
+                t_now = time.monotonic()
+                if t_prev is not None:
+                    iv = t_now - t_prev
+                    if iv < 1.5:            # exclude gap stutters — only count clean arrivals
+                        _ivs.append(iv)
+                        if len(_ivs) >= 5:  # enough samples — update drain pace
+                            chunk_dur = sum(_ivs) / len(_ivs)
+                t_prev = t_now
+                if len(buf) >= _PLEX_MAX_BUF:
+                    buf.popleft()   # drop oldest — keep stream as close to live as possible
+                buf.append(chunk)
+
+        fill_task = asyncio.create_task(_filler())
+        try:
+            # Fill pre-buffer before sending first byte to Plex
+            deadline = time.monotonic() + 15.0
+            while len(buf) < _PLEX_PREBUF_N and not upstream_eof:
+                if time.monotonic() > deadline:
+                    break
+                await asyncio.sleep(0.05)
+
+            t_next_send = time.monotonic()
+            while True:
+                if buf:
+                    now = time.monotonic()
+                    if t_next_send > now:
+                        await asyncio.sleep(t_next_send - now)
+                    yield buf.popleft()
+                    t_next_send = max(time.monotonic(), t_next_send) + chunk_dur
+                elif upstream_eof:
+                    break
+                else:
+                    await asyncio.sleep(0.02)   # underrun — wait for upstream to resume
+                if await request.is_disconnected():
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.warning("Plex jitter-buf error [%s]: %s", ch.name, exc)
+        finally:
+            fill_task.cancel()
+            await mux.unsubscribe(queue, viewer_ip)
+
     return StreamingResponse(viewer_stream(), media_type="video/MP2T",
                              headers={"Cache-Control": "no-cache", "X-Channel": ch.name})
 
@@ -3673,6 +3655,28 @@ def _load_channel_cache(sub_name: str, max_age: Optional[int] = CHANNEL_CACHE_TT
         log.warning("Channel cache load failed [%s]: %s", sub_name, exc)
         return None
 
+def _expire_channel_cache(sub_name: str) -> None:
+    """Mark cache as expired (fetched_at=0) so next refresh does a live fetch.
+    The data payload is kept so it can still be used as a stale fallback if the
+    live fetch fails. Best-effort — silently swallows all errors."""
+    try:
+        path = _channel_cache_path(sub_name)
+        if not os.path.exists(path):
+            return
+        with open(path) as f:
+            data = json.load(f)
+        data["fetched_at"] = 0
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except BaseException:
+            try: os.unlink(tmp)
+            except OSError: pass
+    except Exception as exc:
+        log.debug("_expire_channel_cache [%s]: %s", sub_name, exc)
+
 def _save_channel_cache(sub_name: str, channels: list) -> None:
     """Persist filtered channel list to disk (atomic write)."""
     try:
@@ -3923,7 +3927,12 @@ async def _register_user_session(user: User, channel_key: str,
         user.last_seen_ts       = time.time()
         first_time_this_ip      = (user.last_seen_ip != client_ip)
         user.last_seen_ip       = client_ip
-    # New-IP alert removed — too noisy for dynamic IPs (mobile clients, etc.)
+    # Optional Item 5: alert on first login from a new IP
+    if first_time_this_ip and _xtream_cfg().get("user_alerts_enabled", True):
+        asyncio.create_task(tg_send(tg_alert(
+            "🔑", "New Xtream IP",
+            f"<b>{html.escape(user.username)}</b> connected from "
+            f"<code>{html.escape(client_ip)}</code> (first time)")))
     _publish_user_event("session_start", user.username,
                         sid=sess.id, channel_key=channel_key,
                         client_ip=client_ip,
@@ -5131,13 +5140,31 @@ async def get_groups():
 
 @app.post("/api/groups")
 async def set_groups(body: GroupModel):
-    cfg = load_config(); cfg.setdefault("filters", {})["groups"] = body.groups
-    save_config(cfg); state.allowed_groups = set(body.groups)
+    log.info("set_groups called: %d group(s) from %s", len(body.groups),
+             body.groups[:3] if body.groups else [])
+    cfg = load_config()
+    cfg.setdefault("filters", {})["groups"] = body.groups
+    save_config(cfg)
+    state.allowed_groups = set(body.groups)
     # Saving the filter is an explicit "I've seen everything" action — clear new flags
     state.new_groups_by_sub.clear()
-    await state.refresh_channels()
-    state.log_event("channel", "FILTER UPDATED", f"{len(body.groups)} groups selected, {len(state.channels)} channels loaded")
-    return {"status": "ok", "groups": len(body.groups), "channels": len(state.channels)}
+    # Expire the per-sub M3U caches so refresh_channels does a live fetch with
+    # the new filter. Data payload is kept intact as a stale fallback in case the
+    # live fetch fails (network timeout etc.).
+    for sub in state.subscriptions:
+        _expire_channel_cache(sub.name)
+    log.info("M3U caches expired — refresh will apply new filter immediately")
+    refresh_ok = True
+    try:
+        await state.refresh_channels()
+    except Exception as exc:
+        log.error("refresh_channels failed after group filter save: %s", exc, exc_info=True)
+        refresh_ok = False
+    state.log_event("channel", "FILTER UPDATED",
+                    f"{len(body.groups)} groups selected, {len(state.channels)} channels loaded"
+                    + ("" if refresh_ok else " (refresh failed — will retry on next cycle)"))
+    return {"status": "ok", "groups": len(body.groups), "channels": len(state.channels),
+            "refresh_ok": refresh_ok}
 
 @app.post("/api/groups/seen")
 async def mark_groups_seen():
@@ -5201,7 +5228,10 @@ async def set_channel_groups(body: _ChannelGroupsBody):
                     for key, grp in body.assignments.items()]
     cfg["channel_groups"] = direct_rules + existing_regex
     save_config(cfg)
-    await state.refresh_channels()
+    try:
+        await state.refresh_channels()
+    except Exception as exc:
+        log.error("refresh_channels failed after channel-groups save: %s", exc, exc_info=True)
     state.log_event("channel", "GROUPS UPDATED",
                     f"{len(body.group_order)} groups, {len(body.assignments)} direct assignments")
     return {"status": "ok", "groups": len(body.group_order), "channels": len(state.channels)}
